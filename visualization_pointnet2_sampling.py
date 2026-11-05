@@ -1,86 +1,89 @@
+"""Inspect FPS and ball-query neighborhoods; optionally export a static figure."""
+import argparse
+import json
 import os
+from pathlib import Path
 import numpy as np
 import torch
 from Pointnet_Pointnet2_pytorch.models.pointnet2_utils import farthest_point_sample, index_points, query_ball_point
 
-import open3d as o3d
+
+def parse_args():
+    parser = argparse.ArgumentParser(description=__doc__)
+    parser.add_argument('--data_root', type=Path, default=os.environ.get('MODELNET40_ROOT', str(Path(__file__).resolve().parent / 'data/modelnet40_normal_resampled')))
+    parser.add_argument('--sample_index', type=int, default=0)
+    parser.add_argument('--num_points', type=int, default=1024)
+    parser.add_argument('--centroids', type=int, default=128)
+    parser.add_argument('--radius', type=float, default=0.1)
+    parser.add_argument('--neighbors', type=int, default=16)
+    parser.add_argument('--seed', type=int, default=0)
+    parser.add_argument('--output', type=Path, help='Export a PNG without opening a window')
+    return parser.parse_args()
 
 
-DATA_PATH = 'C:/Users/naihui.zhang/data/modelnet40_normal_resampled/'
-SAMPLE_INDEX = 0
-
-
-def main():
-    cat = [line.rstrip() for line in open(os.path.join(DATA_PATH, 'modelnet40_shape_names.txt'))]
-    classes = dict(zip(cat, range(len(cat))))
-    print("分类标签:", classes)
-
-    train_shape_ids = [line.rstrip() for line in open(os.path.join(DATA_PATH, 'modelnet40_train.txt'))]
-    shape_names = ['_'.join(x.split('_')[0:-1]) for x in train_shape_ids]
-    datapath = [(shape_names[i], os.path.join(DATA_PATH, shape_names[i], train_shape_ids[i]) + '.txt') for i in range(len(train_shape_ids))]
-
-    fn = datapath[SAMPLE_INDEX]
-    point_set = np.loadtxt(fn[1], delimiter=',').astype(np.float32)
-    point_cls = fn[0]
-    print("示例数据原始维度:", point_set.shape)
-    print(f"示例数据标签: {point_cls}({classes[point_cls]})")
-
-    print("====================处理点云数据，仅选用1024个point=======================")
-    point_set = torch.from_numpy(point_set).unsqueeze(0)  # [B=1, N, C]
-    xyz = point_set[:, :, :3]  # [B=1, N, 3] FPS只使用坐标
-    fps_idx = farthest_point_sample(xyz, 1024)  # [B=1, 1024] 采样点索引
-    point_set = index_points(point_set, fps_idx)  # [B=1, 1024, C] 按索引取出采样点
-    print("示例数据处理后维度:", point_set.shape)
-
-    print("=====================从1024个点中采样512个centroid，并得到中心坐标========================")
-    xyz = point_set[:, :, :3]
-    centroid_idx = farthest_point_sample(xyz, 128)
-    centroid_point = index_points(point_set, centroid_idx)
-
-    print(f"centroid point维度为: {centroid_point.shape}")
-    print(f"原始point_set维度为: {point_set.shape}")
-
-    point_set_np = point_set[0].detach().cpu().numpy()
-    centroid_point_np = centroid_point[0].detach().cpu().numpy()
-    complement_mask = ~np.isin(np.arange(point_set_np.shape[0]), centroid_idx[0].cpu().numpy())
-    complement_point_np = point_set_np[complement_mask]
-    print(f"centroid point numpy维度为: {centroid_point_np.shape}")
-    print(f"补集点numpy维度为: {complement_point_np.shape}")
-
-    # point_set_pcd = o3d.geometry.PointCloud()
-    # point_set_pcd.points = o3d.utility.Vector3dVector(point_set_np[:, :3])
-    # point_set_pcd.normals = o3d.utility.Vector3dVector(point_set_np[:, 3:6])
-
-    selected_centroid = centroid_point[:, 0:1, :3]
-    print("选中centroid维度为:", selected_centroid.shape)
-
-    grouped_idx = query_ball_point(0.1, 16, xyz, selected_centroid)
-    print("Ball Query 返回grouped_idx维度:", grouped_idx.shape)
-
-    grouped_points = index_points(point_set, grouped_idx)
-    grouped_points_np = grouped_points[0].detach().cpu().numpy()  # (1, 16, 6)
-    grouped_points_np = grouped_points_np.reshape(-1, 6)  # 摊平为 (16, 6)，Open3D需要(N, 3)
-    print("grouped_points_np维度:", grouped_points_np.shape)
-
-    # colors = np.full((point_set_np.shape[0], 3), 0.5)  # 全部初始化为背景灰色
-    # group_idx_np = grouped_idx[0].reshape(-1).cpu().numpy()  # (16,) group点在point_set中的索引
-    # colors[group_idx_np] = [0, 1, 0]  # group：绿色
-    # colors[centroid_idx[0, 0].item()] = [1, 0, 0]  # 选中centroid：红色（若在group内则覆盖绿色）
-    #
-    # combined_pcd = o3d.geometry.PointCloud()
-    # combined_pcd.points = o3d.utility.Vector3dVector(point_set_np[:, :3])
-    # combined_pcd.normals = o3d.utility.Vector3dVector(point_set_np[:, 3:6])
-    # combined_pcd.colors = o3d.utility.Vector3dVector(colors)
-    # o3d.visualization.draw_geometries([combined_pcd])  # type: ignore[arg-type]
-
-    center = selected_centroid[0, 0]
-    dist = torch.sqrt(torch.sum((xyz[0] - center)**2, dim=1))
-    valid_mask = dist <= 0.1
-
-    print("radius内真实点数:", valid_mask.sum().item())
-    print("Ball Query输出点数:", grouped_idx.numel())
-    print("Ball Query输出unique点数:", torch.unique(grouped_idx).numel())
+def main(args):
+    root = args.data_root.expanduser()
+    split = root / 'modelnet40_train.txt'
+    if not split.is_file():
+        raise FileNotFoundError(f'Missing {split}. Set --data_root or MODELNET40_ROOT.')
+    shape_ids = split.read_text(encoding='utf-8').splitlines()
+    if not 0 <= args.sample_index < len(shape_ids):
+        raise ValueError('sample_index is outside the training split')
+    shape_id = shape_ids[args.sample_index]
+    category = shape_id.rsplit('_', 1)[0]
+    points = np.loadtxt(root / category / (shape_id + '.txt'), delimiter=',', dtype=np.float32)
+    xyz_np = np.atleast_2d(points)[:, :3].copy()
+    if not (1 <= args.centroids <= args.num_points <= len(xyz_np)):
+        raise ValueError('require 1 <= centroids <= num_points <= input point count')
+    if not (1 <= args.neighbors <= args.num_points) or args.radius <= 0:
+        raise ValueError('require radius > 0 and 1 <= neighbors <= num_points')
+    xyz_np -= xyz_np.mean(axis=0)
+    scale = np.linalg.norm(xyz_np, axis=1).max()
+    if scale == 0:
+        raise ValueError('Cannot normalize a cloud with zero spatial extent')
+    xyz_np /= scale
+    torch.manual_seed(args.seed)
+    xyz = torch.from_numpy(xyz_np).unsqueeze(0)
+    sampled = index_points(xyz, farthest_point_sample(xyz, args.num_points))
+    centroid_indices = farthest_point_sample(sampled, args.centroids)
+    centroids = index_points(sampled, centroid_indices)
+    center = centroids[:, :1, :]
+    group_indices = query_ball_point(args.radius, args.neighbors, sampled, center)
+    distances = torch.linalg.vector_norm(sampled[0] - center[0, 0], dim=1)
+    report = dict(shape_id=shape_id, seed=args.seed, input_points=len(xyz_np), sampled_points=args.num_points,
+                  centroids=args.centroids, radius=args.radius, requested_neighbors=args.neighbors,
+                  points_in_radius=int((distances <= args.radius).sum()), returned_neighbors=group_indices.numel(),
+                  unique_returned_neighbors=torch.unique(group_indices).numel())
+    print(json.dumps(report, indent=2))
+    if args.output:
+        import matplotlib
+        matplotlib.use('Agg')
+        import matplotlib.pyplot as plt
+        cloud = sampled[0].numpy()
+        centers = centroids[0].numpy()
+        neighbors = cloud[np.unique(group_indices.numpy())]
+        fig = plt.figure(figsize=(13, 4.5), layout='constrained')
+        titles = ['Input: centered / unit sphere', f'FPS: {args.num_points} points, {args.centroids} centroids',
+                  f'Ball query: radius {args.radius:g}, {len(neighbors)} unique neighbors']
+        for i, title in enumerate(titles):
+            ax = fig.add_subplot(1, 3, i + 1, projection='3d', computed_zorder=False)
+            background = xyz_np if i == 0 else cloud
+            ax.scatter(*background.T, s=1, color='#a6b7ca', alpha=0.45)
+            if i == 1:
+                ax.scatter(*centers.T, s=8, color='#1265ad')
+            if i == 2:
+                ax.scatter(*neighbors.T, s=18, color='#20a387')
+                ax.scatter(*center[0].numpy().T, s=65, marker='x', linewidths=2, color='#d55e00', depthshade=False)
+            ax.set(title=title, xlabel='x', ylabel='y', zlabel='z')
+            ax.set_box_aspect((1, 1, 1))
+            ax.set(xlim=(-1, 1), ylim=(-1, 1), zlim=(-1, 1), xticks=[-1, 0, 1], yticks=[-1, 0, 1], zticks=[-1, 0, 1])
+            ax.view_init(elev=22, azim=35)
+        fig.suptitle(f'{shape_id} | seed={args.seed} | blue: FPS / green: neighbors / orange: center')
+        args.output.parent.mkdir(parents=True, exist_ok=True)
+        fig.savefig(args.output, dpi=170, bbox_inches='tight')
+        plt.close(fig)
+        args.output.with_suffix('.json').write_text(json.dumps(report, indent=2) + '\n', encoding='utf-8')
 
 
 if __name__ == '__main__':
-    main()
+    main(parse_args())

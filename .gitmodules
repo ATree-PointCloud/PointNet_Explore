@@ -1,0 +1,6 @@
+[submodule "Pointnet_Pointnet2_pytorch"]
+	path = Pointnet_Pointnet2_pytorch
+	url = https://github.com/ATree-PointCloud/Pointnet_Pointnet2_pytorch.git
+[submodule "dgcnn"]
+	path = dgcnn
+	url = https://github.com/ATree-PointCloud/dgcnn.git

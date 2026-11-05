@@ -216,3 +216,15 @@ __marimo__/
 
 # Streamlit
 .streamlit/secrets.toml
+
+# Local repository migration backups
+.migration-backup/
+
+# Local experiment outputs
+/data/
+/log/
+/checkpoints/
+/.idea/
+*.pth
+*.pt
+*.t7

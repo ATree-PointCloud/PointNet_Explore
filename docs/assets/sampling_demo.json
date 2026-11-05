@@ -1,0 +1,12 @@
+{
+  "shape_id": "airplane_0001",
+  "seed": 0,
+  "input_points": 10000,
+  "sampled_points": 1024,
+  "centroids": 128,
+  "radius": 0.1,
+  "requested_neighbors": 16,
+  "points_in_radius": 11,
+  "returned_neighbors": 16,
+  "unique_returned_neighbors": 11
+}
